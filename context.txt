@@ -1,0 +1,905 @@
+================================================================================
+  KGRAPH — KNOWLEDGE GRAPH SEARCH & RECOMMENDATION PLATFORM
+  Project Context File  |  Last Updated: 2026-07-07
+================================================================================
+
+PROJECT OVERVIEW
+----------------
+KGraph is a full-stack web application for discovering Indian software projects
+and developers using natural language search, powered by a Neo4j Knowledge Graph.
+
+Core concept: Instead of keyword databases, entities (Developers, Projects,
+Technologies, Domains, Locations) are stored as graph nodes with typed
+relationships. This enables powerful graph-traversal-based recommendations.
+
+Use cases:
+  - "developers with Python experience and more than 5 projects"
+  - "healthcare projects in Delhi using React"
+  - "AI developers from Bangalore"
+  - "e-commerce projects using FastAPI and machine learning"
+
+--------------------------------------------------------------------------------
+TECH STACK
+--------------------------------------------------------------------------------
+Layer        | Technology
+-------------|----------------------------------------------------------
+Frontend     | React 19, TypeScript 6, TailwindCSS v4, Vite 8
+State/Data   | TanStack React Query v5, React Router v7, Axios
+Graph Viz    | react-force-graph-2d v1.29
+Backend      | Python 3.11, FastAPI 0.109, Pydantic v2, pydantic-settings
+Database     | Neo4j 5.15 (Community Edition)
+DB Driver    | neo4j Python driver 5.17
+Local LLM    | Ollama 0.30+ (host systemd service), llama3.2:1b model
+Embedding    | Ollama nomic-embed-text (274 MB, 768-dim vectors, host service)
+Vector Store | ChromaDB 0.5.23 (in-process, persistent Docker volume)
+RAG Layer    | CSV → nomic-embed-text → ChromaDB cosine search → httpx → Ollama /api/chat
+Deployment   | Docker Compose (3 containers) + Ollama on host
+Dev Tools    | uvicorn[standard] 0.27, ESLint, TypeScript ESLint
+
+--------------------------------------------------------------------------------
+DIRECTORY STRUCTURE
+--------------------------------------------------------------------------------
+recommend/
+├── .env                        # Environment variables (shared)
+├── docker-compose.yml          # Multi-service orchestration
+├── README.md                   # Project readme
+├── context.txt                 # THIS FILE
+├── software_knowledge_graph_data.csv # Local CSV dataset for RAG context
+│
+├── backend/
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   └── app/
+│       ├── __init__.py
+│       ├── main.py             # FastAPI app, lifespan, CORS, routers
+│       ├── api/
+│       │   ├── search.py       # POST /api/search, GET /api/search/suggestions
+│       │   ├── chat.py         # POST /api/chat (Local LLM Chatbot + CSV RAG)
+│       │   ├── projects.py     # CRUD + recommendations + subgraph
+│       │   ├── developers.py   # CRUD + recommendations + subgraph
+│       │   ├── graph.py        # GET /api/graph, GET /api/graph/subgraph
+│       │   └── seed.py         # POST /api/seed, DELETE /api/seed, GET /api/stats
+│       ├── core/
+│       │   ├── config.py       # Pydantic Settings from .env
+│       │   └── database.py     # Neo4jDriver class (singleton neo4j_driver)
+│       ├── models/
+│       │   ├── schemas.py      # All Pydantic request/response models
+│       │   └── chat.py         # Pydantic models for chat requests and responses
+│       └── services/
+│           ├── query_parser.py         # NL query → ParsedQuery filters
+│           ├── search_service.py       # ParsedQuery → Cypher → results
+│           ├── recommendation_service.py # Graph-traversal recommendations
+│           ├── graph_service.py        # Full graph + subgraph builders
+│           ├── chat_rag_service.py     # RAG pipeline: delegates to vector_index, calls Ollama
+│           └── vector_index_service.py # ChromaDB index: CSV → nomic-embed-text → cosine search
+│
+├── frontend/
+│   ├── Dockerfile
+│   ├── package.json
+│   ├── vite.config.ts
+│   ├── index.html
+│   └── src/
+│       ├── main.tsx            # React entry point
+│       ├── App.tsx             # Router + QueryClientProvider
+│       ├── index.css           # TailwindCSS v4 @theme tokens + custom classes
+│       ├── types/
+│       │   └── index.ts        # TypeScript interfaces
+│       ├── services/
+│       │   └── api.ts          # Axios API client (searchAPI, chatAPI, projectsAPI, etc.)
+│       ├── components/
+│       │   ├── Navbar.tsx
+│       │   ├── SearchBar.tsx
+│       │   ├── ProjectCard.tsx
+│       │   ├── DeveloperCard.tsx
+│       │   └── RecommendationPanel.tsx
+│       └── pages/
+│           ├── HomePage.tsx            # Hero, stats, example queries (suggestions box removed)
+│           ├── SearchResultsPage.tsx   # Tabbed results (all/projects/devs)
+│           ├── ProjectDetailPage.tsx   # Project info + recommendations
+│           ├── DeveloperDetailPage.tsx # Dev info + projects + recommendations
+│           ├── GraphExplorerPage.tsx   # Force-directed graph with filters
+│           └── ChatPage.tsx            # Dual-mode chat UI: LLM-LOCAL / RAG toggle,
+│                                       # response mode badge, auto-fallback indicator
+│
+└── neo4j/
+    └── init/
+        └── seed_data.cypher    # Cypher seed: constraints, indexes, all nodes/rels
+
+--------------------------------------------------------------------------------
+ENVIRONMENT VARIABLES  (.env) [OPTIONAL - Defaults are built-in]
+--------------------------------------------------------------------------------
+NEO4J_URI=bolt://neo4j:7687        # bolt://localhost:7687 for local dev
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=recommend_neo4j_2024
+NEO4J_DATABASE=neo4j
+BACKEND_HOST=0.0.0.0
+BACKEND_PORT=8000
+CORS_ORIGINS=http://localhost:3000,http://localhost:5173
+VITE_API_URL=http://localhost:8000
+
+# NLP Query Parser
+QUERY_PARSER=rule               # rule | gemini | openai
+GEMINI_API_KEY=                 # required if QUERY_PARSER=gemini
+GEMINI_MODEL=gemini-1.5-flash   # or gemini-1.5-pro for higher accuracy
+OPENAI_API_KEY=                 # required if QUERY_PARSER=openai
+
+--------------------------------------------------------------------------------
+SERVICES & PORTS
+--------------------------------------------------------------------------------
+Service    | Port   | URL
+-----------|--------|-----------------------------------
+Frontend   | 5173   | http://localhost:5173
+Backend    | 8000   | http://localhost:8000
+Neo4j HTTP | 7474   | http://localhost:7474  (browser)
+Neo4j Bolt | 7687   | bolt://localhost:7687
+Ollama LLM | 11434  | http://localhost:11434
+
+--------------------------------------------------------------------------------
+API ENDPOINTS  (all under /api prefix)
+--------------------------------------------------------------------------------
+METHOD  | ENDPOINT                                   | DESCRIPTION
+--------|--------------------------------------------|---------------------------------
+GET     | /                                          | Root health check
+GET     | /health                                    | Detailed health + DB status
+POST    | /api/search                                | Natural language search
+POST    | /api/chat                                  | Natural language chatbot with CSV RAG
+GET     | /api/search/suggestions?q=<str>            | Autocomplete suggestions
+GET     | /api/projects?domain=&technology=&limit=   | List projects (filterable)
+GET     | /api/projects/{name}                       | Get project by name
+GET     | /api/projects/{name}/recommendations       | Similar projects + devs
+GET     | /api/projects/{name}/graph                 | Project subgraph
+GET     | /api/developers?technology=&min_projects=  | List developers (filterable)
+GET     | /api/developers/{name}                     | Get developer by name
+GET     | /api/developers/{name}/recommendations     | Similar devs + projects
+GET     | /api/developers/{name}/graph               | Developer subgraph
+GET     | /api/graph                                 | Full knowledge graph
+GET     | /api/graph/subgraph?entity_type=&name=     | Entity subgraph
+POST    | /api/seed?force=true                       | Seed DB (force=true to re-seed)
+DELETE  | /api/seed                                  | Clear all DB data
+GET     | /api/stats                                 | Node/relationship counts
+
+--------------------------------------------------------------------------------
+KNOWLEDGE GRAPH SCHEMA
+--------------------------------------------------------------------------------
+NODE TYPES:
+  (:Developer)  { name, project_count, bio }
+  (:Project)    { name, description, tagline, developed_on }
+  (:Technology) { name }
+  (:Domain)     { name }
+  (:Location)   { name }
+
+RELATIONSHIPS:
+  (Developer)-[:DEVELOPED]->(Project)
+  (Project)-[:USES_TECH]->(Technology)
+  (Project)-[:BELONGS_TO]->(Domain)
+  (Project)-[:LOCATED_IN]->(Location)
+
+CONSTRAINTS (unique keys):
+  Developer.name, Project.name, Technology.name, Domain.name, Location.name
+
+INDEXES:
+  Developer.project_count (range)
+  FULLTEXT on Project(name, description, tagline)
+  FULLTEXT on Developer(name)
+
+--------------------------------------------------------------------------------
+SEED DATA SUMMARY  (neo4j/init/seed_data.cypher)
+--------------------------------------------------------------------------------
+  117 Technology nodes: ASP, ASP.net, Python, C#, C++, Java, JS, PHP, React, 
+                        React Native, Vue.js, MATLAB, Oracle, MySQL, Docker,
+                        Desktop based application, Web based application, etc.
+
+  20 Domain nodes: AI & ML, CRS Converters, Dashboard, Data Management, 
+                   Digitization, Helpdesk, Laboratory, Library, Log, Utility,
+                   Project Management & Process Workflow, Reservoir, Security...
+
+  21 Location nodes: AAAB, Ahmedabad, CB, Chennai, Database, Dehradun, E&D,
+                     GEOPIC, IRS, Jorhat, Mumbai, RCC, Rajahmundry, Vadodara,
+                     WON, WOB...
+
+  55 Developer nodes (examples):
+    A.V. Satyanarayana, Abhishek Bhardwaj, Ajith C, Amit Kumar, Anshuman Borah,
+    Arpit Buddhiwant, Diganta Dutta, Mandeep Singh, Sanjay Chakravorty,
+    Sanjay Solanki, Vivek Gaurav Saini...
+
+  54 Project nodes (examples):
+    AD user info, AcidEx, Annual Work Program, Award Nomination Portal, CECMS,
+    CEGDIS, CRM Software, Drona, Explore, FIRE, GeoMap, Logger, MISDesk,
+    Paperless Office Suite, PYWRT - Word Repoting Tool...
+
+--------------------------------------------------------------------------------
+BACKEND ARCHITECTURE DETAILS
+--------------------------------------------------------------------------------
+
+### Neo4jDriver (app/core/database.py)
+- Singleton instance: `neo4j_driver`
+- connect() has retry logic: 5 attempts, 3s delay (handles Docker startup race)
+- execute_query() uses session.run() + result.data() → returns List[dict]
+- execute_write() for mutations
+- get_stats() returns node/rel counts by label/type
+- verify_connectivity() for health checks
+
+### Query Parser (app/services/query_parser.py)
+- Abstract base: BaseQueryParser
+- Three concrete implementations (see NLP ARCHITECTURE section for full details):
+    RuleBasedParser  — regex + keyword lists, no API key, always available
+    GeminiParser     — Google Gemini API, requires GEMINI_API_KEY
+    OpenAIParser     — OpenAI GPT function calling, requires OPENAI_API_KEY
+- All parsers fall back to RuleBasedParser on error (safe degradation)
+- Selected via QUERY_PARSER env var → settings.query_parser → get_parser()
+- get_parser(type) factory returns the correct instance
+- Returns: ParsedQuery Pydantic model
+
+### Search Service (app/services/search_service.py)
+- CRITICAL: Uses Neo4j 5.x EXISTS { } subquery syntax for filters
+  (NOT OPTIONAL MATCH + WHERE — that creates Cartesian products and fails)
+- Builds Cypher dynamically based on which filters are set
+- search_developers() and search_projects() with limit param
+- **Keyword matching:**
+  - For projects: matches name, tagline, description.
+  - For developers: matches developer name, bio, and also checks if any of their projects' names, taglines, descriptions, technologies, or domains match the keyword (resolves issues like "web developers" search by checking project tech/descriptions).
+- Relevance scoring:
+  - Technology match: +30 per tech
+  - Domain match: +25
+  - Location match: +20
+  - project_count bonus: min(count*2, 20)
+  - min_projects satisfied: +15
+  - Keyword match bonus: up to +25 depending on where keyword matched (name, bio, tagline, description, tech, or domain)
+
+### Recommendation Service (app/services/recommendation_service.py)
+- get_project_recommendations(project_name):
+    → recommended_projects (shared tech×3 + domain×2 + location scoring)
+    → recommended_developers (devs using same tech, not already on this project)
+- get_developer_recommendations(developer_name):
+    → recommended_developers (other devs sharing technologies)
+    → recommended_projects (projects using dev's tech stack, not built by dev)
+- Both directions are bidirectional (projects get devs, devs get projects)
+
+### Graph Service (app/services/graph_service.py)
+- get_full_graph(): all nodes + all edges, deduplicated via set of tuples
+  IMPORTANT: Query returns flat scalar columns (d.name AS dev_name),
+  NOT full Node objects (which would require node['prop'] access)
+- get_subgraph(entity_type, entity_name): 1-hop local context
+- Returns GraphResponse with nodes[], links[], stats{}
+- Node colors: Developer=#6366f1, Project=#06b6d4, Tech=#f59e0b,
+               Domain=#10b981, Location=#ef4444
+
+### Seed API (app/api/seed.py)
+- POST /api/seed?force=false  — skips if data exists; force=true clears+reseeds
+- DELETE /api/seed            — DETACH DELETE all nodes
+- GET /api/stats              — node/rel counts by type
+- Parses cypher file line by line, splits on semicolons
+- Searches for seed file in: ../neo4j/init/, /var/lib/neo4j/import/, cwd
+
+### Chat RAG Service (app/services/chat_rag_service.py)
+- **Mode routing:** `generate_chat_response()` reads `request.mode` ("llm" | "rag").
+  - `mode="rag"`: Returns `_build_direct_answer(sources)` immediately — no LLM call.
+    Short-circuits with "no records found" if RAG returns nothing.
+  - `mode="llm"`: Free-form Ollama AI. RAG results are injected as *optional* context.
+    The LLM can answer any question from its own knowledge. Falls back to direct RAG
+    answer if Ollama is unavailable or returns empty. No "no RAG" short-circuit for LLM mode.
+- **`warmup_llm()`:** Sends an empty `/api/generate` with `keep_alive: 10m` at startup
+  so Ollama loads the model into memory before the first real user request (avoids cold-start timeout).
+- **`_build_direct_answer(sources)`:** Formats RAG records into a clean numbered list without LLM.
+  Used for RAG mode responses and as the LLM fallback.
+- **Timeout:** `OLLAMA_TIMEOUT = 180.0` seconds (raised from 90s to handle cold-start model loads).
+- **Temperature:** 0.4 in LLM mode (raised from 0.05 for natural conversation).
+- **Response fields:** `ChatResponse.response_mode` reports which mode actually produced the answer.
+- Handles async HTTP to Ollama API via `httpx.AsyncClient`.
+
+### Vector Index Service (app/services/vector_index_service.py)
+- **One-time startup indexing:** `build_index()` reads `software_knowledge_graph_data.csv`,
+  converts each row to a rich text string (name + description + category + tech + location + devs),
+  calls Ollama `/api/embeddings` with `nomic-embed-text`, and upserts 768-dim vectors into ChromaDB.
+- **Skip logic:** Reads MD5 fingerprint from a sidecar JSON file
+  (`CHROMA_PATH/.index_fingerprint.json`). If fingerprint matches AND collection count ==
+  len(rows): skips re-indexing entirely (near-instant startup).
+- **Fingerprint storage:** Written to a plain JSON sidecar file ONLY after all rows are
+  successfully upserted. The collection is NEVER deleted post-indexing.
+- **Re-index trigger:** Fingerprint mismatch OR count mismatch triggers a wipe + full re-index.
+  Manual trigger: `docker volume rm recommend_chroma_data && docker compose up -d`.
+- **`query(text, top_k, distance_threshold=0.75)`:** Embeds the query via `nomic-embed-text`,
+  runs ChromaDB cosine similarity search, filters results by `distance_threshold` (cosine
+  distance ≤ 0.75). If no results pass the threshold, returns top-3 weak candidates so the
+  caller can decide how to handle them. Returns [] if index not ready.
+- **ChromaDB config:** `PersistentClient` at `CHROMA_PATH=/app/chroma_db`, collection `kgraph_software`,
+  `hnsw:space=cosine`, `anonymized_telemetry=False`.
+- **Batch size:** 8 rows per batch (Ollama is single-threaded per model).
+- **Singleton:** `vector_index = VectorIndexService()` — imported by `chat_rag_service` and `main`.
+
+--------------------------------------------------------------------------------
+FRONTEND ARCHITECTURE DETAILS
+--------------------------------------------------------------------------------
+
+### CSS Design System (src/index.css)
+- TailwindCSS v4 with @theme block (NOT tailwind.config.js)
+- Color tokens:
+    primary-*:  Indigo/Purple scale (500=#6366f1, 600=#4f46e5)
+    surface-*:  Reversed dark theme (50=darkest #020617, 950=lightest #f8fafc)
+    accent-cyan:    #0891b2
+    accent-amber:   #d97706
+    accent-emerald: #059669
+    accent-rose:    #db2777
+- Custom classes: .glass, .glass-card, .gradient-text
+- Badge classes: .tech-badge (indigo), .domain-badge (emerald), .location-badge (rose)
+- Animations: .animate-fade-in-up, .animate-shimmer, .animate-pulse-glow
+
+### Routing (src/App.tsx)
+  /                   → HomePage
+  /search?q=<query>   → SearchResultsPage
+  /project/:name      → ProjectDetailPage
+  /developer/:name    → DeveloperDetailPage
+  /graph              → GraphExplorerPage
+  /chat               → ChatPage
+
+### API Client (src/services/api.ts)
+- Base URL from VITE_API_URL env or defaults to http://localhost:8000
+- Axios instance with /api prefix
+- Named exports: searchAPI, chatAPI, projectsAPI, developersAPI, graphAPI, seedAPI
+
+### TypeScript Types (src/types/index.ts & api.ts)
+  Developer { name, project_count, bio?, locations[], technologies[], domains[], projects[], relevance_score }
+  Project   { name, description?, tagline?, developed_on?, developers[], technologies[], domains[], locations[], relevance_score }
+  SearchResponse { query, entity_type, parsed_filters, developers[], projects[], total_results }
+  RecommendationResponse { source, source_type, recommended_projects[], recommended_developers[] }
+  GraphNode { id, label, type, properties, color?, size? }
+  GraphLink { source, target, type }
+  GraphData { nodes[], links[] }
+  ChatMessage { role, content }
+  ChatRequest { messages[], query, mode: "llm"|"rag" }
+  ChatResponse { answer, sources[], response_mode: "llm"|"rag" }
+
+### Pages
+- HomePage: Hero section, stats grid, clickable example queries
+- SearchResultsPage: TanStack Query fetch, tabs (All/Projects/Developers),
+                     loading skeleton, parsed filter badges display
+- ProjectDetailPage: Project details + tech/domain/dev grids + RecommendationPanel
+- DeveloperDetailPage: Dev profile + stats counters + projects grid + RecommendationPanel
+- GraphExplorerPage: ForceGraph2D canvas with node type filter buttons, custom nodeCanvasObject renderer with selected node ring/glow, hover tooltip, and interactive popup details card on selection showing node properties and connected items.
+- ChatPage: Dual-mode chat UI with LLM-LOCAL / RAG pill toggle in the header.
+            Mode badge on each AI response shows which mode was actually used
+            (turns amber + "auto-fallback" if LLM requested but RAG was returned).
+            Expandable RAG context sources accordion.
+
+--------------------------------------------------------------------------------
+DOCKER COMPOSE SETUP
+--------------------------------------------------------------------------------
+ARCHITECTURE NOTE:
+  Ollama runs as a HOST systemd service (installed via install.sh), NOT in Docker.
+  The 3 Docker containers reach Ollama at host.docker.internal:11434 (= 172.17.0.1).
+  This avoids the 3+ GB Ollama Docker image download and simplifies GPU passthrough.
+
+Services (docker-compose.yml):
+  neo4j:
+    image: neo4j:5.15.0
+    env: NEO4J_AUTH, NEO4J_PLUGINS=["apoc"]
+    volumes: neo4j_data, neo4j_logs, ./neo4j/init → /var/lib/neo4j/import
+    healthcheck: cypher-shell 'RETURN 1' every 10s
+  
+  backend:
+    build: ./backend
+    depends_on: neo4j (healthy)
+    extra_hosts: host.docker.internal:host-gateway   ← maps to 172.17.0.1
+    env: NEO4J_URI=bolt://neo4j:7687
+         OLLAMA_URL=http://host.docker.internal:11434
+         OLLAMA_MODEL=llama3.2:1b
+         OLLAMA_EMBED_MODEL=nomic-embed-text
+         CHROMA_PATH=/app/chroma_db
+    volumes: ./backend → /app
+             ./software_knowledge_graph_data.csv → /app/software_knowledge_graph_data.csv
+             chroma_data → /app/chroma_db    ← persists vector index
+             ./neo4j/init → /app/neo4j/init (read-only) ← seed_data.cypher access
+  
+  frontend:
+    build: ./frontend
+    extra_hosts: host.docker.internal:host-gateway
+    depends_on: backend
+    env: VITE_API_URL=http://localhost:8000
+    CMD: npx vite --host 0.0.0.0 --port 5173   ← must use npx vite directly
+
+Ollama (host service, NOT in compose):
+  Install: curl -fsSL https://ollama.com/install.sh | sh
+  Configure to accept Docker connections:
+    sudo mkdir -p /etc/systemd/system/ollama.service.d
+    printf '[Service]\nEnvironment="OLLAMA_HOST=0.0.0.0:11434"\n' \
+      | sudo tee /etc/systemd/system/ollama.service.d/override.conf
+    sudo systemctl daemon-reload && sudo systemctl restart ollama
+  Pull models:
+    ollama pull llama3.2:1b         # Chat generation
+    ollama pull nomic-embed-text    # RAG embeddings (274 MB, 768-dim)
+  Verify: curl http://172.17.0.1:11434/api/tags
+
+IMPORTANT: Inside Docker, backend uses bolt://neo4j:7687 (container DNS)
+           and http://host.docker.internal:11434 (host Ollama via bridge gateway).
+           For local dev without Docker, use bolt://localhost:7687 and http://localhost:11434.
+
+--------------------------------------------------------------------------------
+QUICK START COMMANDS
+--------------------------------------------------------------------------------
+# 1. Install Ollama on host (one-time):
+  curl -fsSL https://ollama.com/install.sh | sh
+
+# 2. Configure Ollama to accept Docker bridge connections (one-time, needs sudo):
+  sudo mkdir -p /etc/systemd/system/ollama.service.d
+  printf '[Service]\nEnvironment="OLLAMA_HOST=0.0.0.0:11434"\n' \
+    | sudo tee /etc/systemd/system/ollama.service.d/override.conf
+  sudo systemctl daemon-reload && sudo systemctl restart ollama
+
+# 3. Pull the LLM model:
+  ollama pull llama3.2:1b
+
+# 4. Pull the embedding model (for vector search RAG):
+  ollama pull nomic-embed-text
+
+# 5. Start all Docker containers:
+  docker compose up -d --build
+
+# 6. Seed the database:
+  curl -X POST http://localhost:8000/api/seed
+
+# Force re-seed:
+  curl -X POST "http://localhost:8000/api/seed?force=true"
+
+# Force re-index ChromaDB (after CSV changes):
+  docker volume rm recommend_chroma_data
+  docker compose up -d
+
+# Cleanup stale containers before compose up (if conflict):
+  docker rm -f recommend-frontend recommend-backend recommend-neo4j
+  docker compose up -d
+
+# Check stats:
+  curl http://localhost:8000/api/stats
+
+# Check Ollama is reachable from Docker bridge:
+  curl http://172.17.0.1:11434/api/tags
+
+# Verify embedding model is available:
+  curl http://localhost:11434/api/tags | python3 -m json.tool | grep nomic
+
+# Local backend dev (without Docker):
+  cd backend
+  pip install -r requirements.txt
+  uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+# Local frontend dev (without Docker):
+  cd frontend
+  npm install
+  npm run dev
+
+# API docs (when backend running):
+  http://localhost:8000/docs    (Swagger UI)
+  http://localhost:8000/redoc   (ReDoc)
+
+--------------------------------------------------------------------------------
+KNOWN PATTERNS & GOTCHAS
+--------------------------------------------------------------------------------
+1. Neo4j Cypher filters MUST use EXISTS { } subqueries (Neo4j 5.x syntax).
+   NEVER chain OPTIONAL MATCH + WHERE for filtering — it creates Cartesian
+   products and silently returns wrong results.
+
+2. neo4j_driver.execute_query() uses result.data() which returns plain Python
+   dicts. Do NOT try to access Neo4j Node properties via .get() on Node objects.
+   The query must return scalars: RETURN d.name AS name, NOT RETURN d.
+
+3. surface-* colors are INVERTED from normal convention:
+   surface-50 = #020617 (darkest), surface-950 = #f8fafc (lightest).
+   This is intentional for the dark theme design.
+
+4. TailwindCSS v4 uses @theme {} block in CSS, NOT tailwind.config.js.
+   Custom colors/tokens go in src/index.css under @theme.
+
+5. The backend lifespan handler catches Neo4j connection failures gracefully —
+   the server starts even if Neo4j is not ready yet (handles Docker startup race).
+   Connection retry logic is inside database.py connect().
+
+6. VITE_API_URL must be http://localhost:8000 (not bolt://...) — this is the
+   HTTP REST URL for Axios. The bolt URL is only for the Python neo4j driver.
+
+7. Seed file is parsed by splitting on semicolons. Each statement is executed
+   separately. Constraint/index creation errors are silently skipped.
+
+8. Recommendations are bidirectional:
+   - Project page: recommended_projects + recommended_developers
+   - Developer page: recommended_developers + recommended_projects
+   Both fields are always populated in RecommendationResponse.
+
+9. Graph visualization uses flat Cypher return columns (d.name AS dev_name)
+   not node objects, to avoid Neo4j Python driver Node vs dict confusion.
+
+10. The DeveloperDetailPage fetches ALL projects via projectsAPI.list() and
+    filters client-side by developer.projects[] name array. This may be slow
+    with large datasets — optimize by adding a /api/developers/{name}/projects
+    endpoint if needed.
+
+11. TypeScript interfaces MUST be imported with `import type` when the bundler
+    processes them as runtime JS modules. ChatMessage is an interface in api.ts —
+    importing it as a value (`import { ChatMessage }`) causes:
+      SyntaxError: The requested module does not provide an export named 'ChatMessage'
+    This crashes the entire React module graph → blank page with no visible error.
+    ALWAYS use: import type { ChatMessage } from '../services/api'
+
+12. Frontend Dockerfile CMD must invoke vite directly. Using:
+      CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
+    does NOT reliably pass flags through npm scripts in Docker. Use instead:
+      CMD ["npx", "vite", "--host", "0.0.0.0", "--port", "5173"]
+
+13. Ollama systemd service defaults to OLLAMA_HOST=127.0.0.1:11434 (localhost only).
+    Docker containers cannot reach 127.0.0.1 on the host — they get their own
+    network namespace. Fix: set OLLAMA_HOST=0.0.0.0:11434 via systemd override.
+    Backend then uses OLLAMA_URL=http://host.docker.internal:11434.
+    The host.docker.internal hostname resolves via extra_hosts: host-gateway
+    which maps to 172.17.0.1 (default Docker bridge gateway IP).
+    Both llama3.2:1b and nomic-embed-text are served by the same Ollama process
+    on the host — no separate service needed.
+
+15. ChromaDB PersistentClient requires the CHROMA_PATH directory to exist before
+    initialisation. The VectorIndexService calls os.makedirs(CHROMA_PATH, exist_ok=True)
+    before creating the client, so this is handled automatically.
+
+16. CRITICAL BUG (FIXED): Do NOT use delete_collection() + get_or_create_collection()
+    to update ChromaDB collection metadata. delete_collection() permanently wipes ALL
+    indexed vectors from disk. get_or_create_collection() then creates a fresh empty
+    collection, so every query returns 0 results even though _ready=True.
+    FIX: Store the CSV fingerprint in a plain JSON sidecar file
+    (CHROMA_PATH/.index_fingerprint.json) instead of collection metadata.
+    The collection is never touched after indexing completes — only wiped when the
+    CSV fingerprint changes (rows added/removed) or on manual volume wipe.
+
+17. ChromaDB's internal posthog telemetry has a known bug:
+    "capture() takes 1 positional argument but 3 were given"
+    This is logged as ERROR but is completely harmless. Set
+    Settings(anonymized_telemetry=False) to suppress it (already done in
+    VectorIndexService._init_chroma()).
+
+18. `docker compose down` does NOT remove containers created by `docker run`
+    (only compose-managed containers). If you manually ran `docker run` for
+    a service, clean it up first: `docker rm -f <container_name>`
+    before running `docker compose up`, or you'll get a name conflict error.
+
+19. seed_data.cypher must be accessible to the BACKEND container, not just Neo4j.
+    The seed API (_find_seed_file) searches for the file at:
+      - <project_root>/../neo4j/init/seed_data.cypher  (relative from /app)
+      - /var/lib/neo4j/import/seed_data.cypher          (not mounted in backend)
+      - neo4j/init/seed_data.cypher                     (relative from /app cwd) ✅
+    Fix: add volume mount to backend service in docker-compose.yml:
+      - ./neo4j/init:/app/neo4j/init:ro
+    Without this, POST /api/seed returns {"status": "partial"} and creates only
+    constraints/indexes — no nodes or relationships are created.
+
+20. VectorIndexService.query() guards against n_results=0 by checking
+    collection_count > 0 before calling ChromaDB. ChromaDB raises an exception
+    if n_results=0 or n_results > collection_count. The guard returns [] with a
+    warning log instead of propagating the error to the chat endpoint.
+
+21. RuleBasedParser substring matching: Using simple `in` keyword checks for tags leads
+    to false positives where short tags match inside unrelated strings (e.g., `"ai"`
+    matching inside `"mumb-ai"`). Always extract using regex word boundary markers
+    (e.g., `r'\b' + re.escape(tech) + r'\b'`).
+
+22. Spellings & Typo support: Exact word boundaries mean common misspelt names or aliases
+    fail to resolve (e.g., `"vadodra"` instead of `"vadodara"`). Maintain a robust
+    alias-mapping dictionary in the parser so regional aliases (e.g. `"baroda"`, `"bombay"`)
+    map directly to canon database names.
+
+23. Developer keyword search: Generic keywords (like `"web"` in `"web developers"`) do
+    not exist inside developer nodes directly. A developer query must traverse relations
+    to their projects, matching the keyword against related project names, taglines,
+    descriptions, technologies, or domains, and boost relevance scoring accordingly.
+
+24. SearchBar suggestions removed: The `onFocus` handler previously set `showSuggestions=true`,
+    showing a dropdown of example queries whenever the search bar was clicked. This was
+    removed (SUGGESTIONS array, showSuggestions state, onFocus/onBlur, dropdown JSX all deleted).
+    The stale `setShowSuggestions(false)` calls inside `handleSearch` and `handleKeyDown`
+    were also cleaned up to avoid TypeScript errors.
+
+25. Chat mode toggle: ChatRequest has `mode: Literal["llm", "rag"]` (default "llm").
+    ChatResponse has `response_mode: Literal["llm", "rag"]` to report actual mode used.
+    RAG mode returns direct structured answer immediately. LLM mode calls Ollama with
+    RAG context as optional supplementary info — the LLM answers freely from its own
+    knowledge too. If LLM mode falls back (empty response or Ollama unavailable),
+    `response_mode` will be "rag" even though "llm" was requested.
+
+26. Ollama cold-start timeout: When Ollama has not had a recent request, it unloads the
+    model from RAM. The first /api/chat call then triggers a model reload which can exceed
+    the httpx timeout, causing an empty ReadTimeout exception — logged as `()`.
+    Fix: `warmup_llm()` sends an empty /api/generate with keep_alive=10m at FastAPI startup.
+    Timeout also raised from 90s to 180s as a secondary safety net.
+    Warm-up is wired into the FastAPI lifespan handler in main.py after the vector index build.
+
+27. VectorIndexService distance-threshold filtering: `query()` now accepts a
+    `distance_threshold` parameter (default 0.75). Only results with cosine distance
+    ≤ threshold are returned. If no results pass the threshold, the top-3 weakest
+    candidates are returned anyway so the caller can decide. This prevents injecting
+    irrelevant context into the LLM prompt.
+
+--------------------------------------------------------------------------------
+FUTURE IMPROVEMENTS / TODO
+--------------------------------------------------------------------------------
+- [x] Implemented GeminiParser using Gemini API (QUERY_PARSER=gemini)
+- [x] Implemented OpenAIParser using GPT function calling (QUERY_PARSER=openai)
+- [x] Integrated local 1B LLM chatbot (Ollama + llama3.2:1b + CSV RAG)
+- [x] Fixed blank page: ChatMessage import type bug in ChatPage.tsx
+- [x] Fixed frontend Docker container: npx vite --host 0.0.0.0 --port 5173
+- [x] Fixed Ollama Docker networking: host-gateway + systemd OLLAMA_HOST override
+- [x] Replaced CSV keyword-matching RAG with semantic vector search
+      (nomic-embed-text embeddings + ChromaDB 0.5.23 persistent cosine index)
+- [x] Fixed seed file not found: mounted ./neo4j/init:/app/neo4j/init:ro in backend
+- [x] Fixed ChromaDB empty index bug: fingerprint stored in sidecar JSON file,
+      collection never deleted post-indexing (was wiping all vectors on every startup)
+- [x] Fixed query parser substring match false-positives using regex word boundaries (\b)
+- [x] Added location typos/alias maps (e.g., "vadodra", "baroda" -> "Vadodara")
+- [x] Fixed empty developer results for general keyword searches by traversing project relations
+- [x] Removed search bar suggestions dropdown (onFocus popup on HomePage/SearchBar)
+- [x] Added dual-mode chat toggle: LLM-LOCAL (Ollama free-form) vs RAG (direct DB lookup)
+      - ChatRequest gains mode: "llm"|"rag"; ChatResponse gains response_mode
+      - Response badge shows actual mode used + amber "auto-fallback" indicator
+- [x] Fixed Ollama cold-start timeout: warmup_llm() at startup + timeout 90s→180s
+- [x] Fixed LLM mode restricted to DB: rewrote system prompt to allow general answers
+      (RAG context is supplementary, not restrictive; temperature 0.05→0.4)
+- [x] Added distance-threshold filtering in VectorIndexService.query() (threshold=0.75)
+- [ ] Add pagination (cursor-based) to list endpoints
+- [ ] Add /api/developers/{name}/projects dedicated endpoint
+- [ ] Add fulltext search using Neo4j FULLTEXT indexes (currently unused)
+- [ ] Add user authentication / saved searches
+- [ ] Add ability to create/edit developers and projects via UI
+- [ ] Implement graph clustering / community detection
+- [ ] Add export functionality (JSON/CSV)
+- [ ] Add analytics dashboard with chart.js or recharts
+- [ ] WebSocket support for real-time graph updates
+- [ ] Add test suite (pytest for backend, Vitest for frontend)
+- [ ] Production Dockerfile (remove --reload, add gunicorn workers)
+- [ ] CI/CD pipeline (GitHub Actions)
+- [ ] Add more Indian cities to location nodes
+- [ ] Cache LLM parser results (Redis) to avoid repeated API calls for same query
+- [ ] Add parser benchmark: compare rule vs gemini accuracy on test queries
+- [ ] Upgrade ollama-init to use proper healthcheck polling instead of curl one-shot
+
+--------------------------------------------------------------------------------
+NLP ARCHITECTURE
+--------------------------------------------------------------------------------
+
+OVERVIEW
+--------
+The NLP layer converts a free-text user query into a structured ParsedQuery
+object that the search service can translate into a Cypher query.
+
+Flow:
+
+  User query string
+        │
+        ▼
+  get_parser(settings.query_parser)   ← reads QUERY_PARSER from .env
+        │
+   ┌────┴──────────────────────┐
+   ▼                           ▼                           ▼
+RuleBasedParser          GeminiParser               OpenAIParser
+(regex/keywords)         (Gemini API)               (GPT-4o-mini)
+   │                          │ error/no key              │ error/no key
+   │                          └──────────────────────────►│
+   │                                                       │ fallback
+   │◄──────────────────────────────────────────────────────┘
+   │
+   ▼
+ParsedQuery {
+  entity: "developer" | "project" | "both",
+  technologies: ["React", "Python"],
+  technology: "React",
+  domain: "Healthcare",
+  location: "Bangalore",
+  min_projects: 5,
+  developed_on: "2024",
+  keyword: "chatbot"
+}
+        │
+        ▼
+  search_service.py  →  Cypher query  →  Neo4j  →  results
+
+
+PARSER 1: RuleBasedParser
+--------------------------
+File: app/services/query_parser.py → class RuleBasedParser
+
+How it works:
+  1. Lowercase the query
+  2. Detect entity type by scoring developer vs project keyword counts
+  3. Match technologies by scanning known list (longest match first to catch
+     multi-word techs like "machine learning" before "learning")
+  4. Normalize tech names: "ml"→"Machine Learning", "nodejs"→"Node.js", etc.
+  5. Match domain using DOMAINS dict (keys are query keywords, values are canonical)
+  6. Match location using LOCATIONS dict
+  7. Extract min_projects via regex: "more than N", "at least N", "N+ projects"
+  8. Extract year via regex: 4-digit number starting with 20
+  9. Remaining words → keyword
+
+Pros: Instant, no API key, zero cost, deterministic, always works offline.
+Cons: Cannot handle paraphrasing, synonyms, or ambiguous phrasing.
+
+Known tech list (30): React, FastAPI, Python, JavaScript, TypeScript, Node.js,
+  Django, Flask, TensorFlow, PyTorch, MongoDB, PostgreSQL, Docker, Kubernetes,
+  AWS, Vue.js, Angular, Next.js, GraphQL, Redis, Machine Learning, NLP,
+  Computer Vision, Scikit-learn, Pandas, Spark, Kafka, Elasticsearch, Go, Rust
+
+Known domains (15 canonical, 30+ keyword aliases):
+  Healthcare, Finance, Education, E-Commerce, AI/ML, DevOps, Social Media,
+  Gaming, IoT, Cybersecurity, Logistics, Real Estate, Agriculture, Media,
+  Sustainability
+
+Known locations (10 cities, with alternate spellings):
+  Delhi, Bangalore, Mumbai, Hyderabad, Pune, Chennai, Kolkata,
+  Ahmedabad, Jaipur, Lucknow
+
+
+PARSER 2: GeminiParser
+-----------------------
+File: app/services/query_parser.py → class GeminiParser
+Package: google-generativeai (pip install google-generativeai)
+
+Setup:
+  1. pip install google-generativeai
+  2. GEMINI_API_KEY=your_key  in .env
+  3. QUERY_PARSER=gemini      in .env
+
+How it works:
+  1. Lazy-initialize on first call (avoids import cost at startup)
+  2. Configure genai with GEMINI_API_KEY
+  3. Create GenerativeModel with:
+       - model_name: settings.gemini_model (default: gemini-1.5-flash)
+       - temperature: 0.1  (low = deterministic)
+       - max_output_tokens: 256
+       - response_mime_type: "application/json"  (forces JSON output)
+       - system_instruction: full schema description prompt
+  4. Send: "Parse this search query: {query}"
+  5. Parse JSON response → build ParsedQuery
+  6. On ANY error (no key, network, bad JSON) → fallback to RuleBasedParser
+
+System prompt teaches Gemini:
+  - The exact 5 node types and their canonical values
+  - All 30 technology names (exact spelling)
+  - All 15 domain names
+  - All 10 city names
+  - The ParsedQuery JSON schema with field descriptions
+  - Rules for each field (enum values, integer types, etc.)
+
+Model recommendations:
+  gemini-1.5-flash  — Fast, cheap, sufficient for structured extraction
+  gemini-1.5-pro    — More accurate for edge cases, higher cost
+  gemini-2.0-flash  — Latest fast model, good balance
+
+Pros: Handles paraphrasing, synonyms, implied context, multi-intent queries.
+Cons: Requires API key, adds ~200-500ms latency, costs per call.
+
+
+PARSER 3: OpenAIParser
+-----------------------
+File: app/services/query_parser.py → class OpenAIParser
+Package: openai (pip install openai)
+
+Setup:
+  1. pip install openai
+  2. OPENAI_API_KEY=your_key  in .env
+  3. QUERY_PARSER=openai      in .env
+
+How it works:
+  1. Lazy-initialize OpenAI client on first call
+  2. Use GPT function calling (tool_choice=required) for guaranteed structure:
+       model: gpt-4o-mini  (fast + cheap)
+       tools: [parse_search_query function with JSON Schema]
+       temperature: 0.1
+  3. Extract tool_call.function.arguments JSON → build ParsedQuery
+  4. On ANY error → fallback to RuleBasedParser
+
+Function schema defines all ParsedQuery fields with types and descriptions.
+GPT function calling guarantees the response matches the schema (no JSON
+parsing errors unlike plain text completion).
+
+Pros: Very reliable structured output via function calling, GPT-4o-mini is cheap.
+Cons: Requires OpenAI API key, adds latency.
+
+
+PARSEDQUERY MODEL
+------------------
+File: app/models/schemas.py → class ParsedQuery
+
+Fields:
+  entity        str        "developer" | "project" | "both"
+  technologies  List[str]  All matched tech names (normalized)
+  technology    str|None   First/primary technology (same as technologies[0])
+  domain        str|None   One canonical domain name
+  location      str|None   One canonical city name
+  min_projects  int|None   Minimum project count filter
+  developed_on  str|None   4-digit year string
+  keyword       str|None   Remaining unmatched search term
+
+
+COMPARISON: WHAT EACH PARSER HANDLES
+--------------------------------------
+Query                                    | Rule  | Gemini/GPT
+-----------------------------------------|-------|------------
+"python developers"                      |  ✅   |  ✅
+"healthcare projects using react"        |  ✅   |  ✅
+"more than 5 projects"                   |  ✅   |  ✅
+"someone who builds hospital software"   |  ❌   |  ✅  (domain=Healthcare)
+"teams working on fintech platforms"     |  ❌   |  ✅  (domain=Finance)
+"engineers in south india"               |  ❌   |  ✅  (location=Bangalore)
+"ML engineers with lots of experience"  |  ⚠️   |  ✅  (min_projects inferred)
+"react or angular developers"            |  ✅   |  ✅  (both in techs[])
+"2024 healthcare projects"               |  ✅   |  ✅
+"chatbot developers"                     |  ❌   |  ✅  (keyword=chatbot)
+
+
+SWITCHING PARSERS
+------------------
+No code changes needed. Edit .env only:
+
+  # Rule-based (default)
+  QUERY_PARSER=rule
+
+  # Gemini (recommended for production)
+  QUERY_PARSER=gemini
+  GEMINI_API_KEY=AIza...
+  GEMINI_MODEL=gemini-1.5-flash
+
+  # OpenAI
+  QUERY_PARSER=openai
+  OPENAI_API_KEY=sk-...
+
+Then restart the backend. The parser is read from settings on every
+search() call so hot-reload (--reload flag) picks it up automatically.
+
+
+INSTALLING OPTIONAL DEPENDENCIES
+----------------------------------
+  # For Gemini:
+  pip install google-generativeai
+
+  # For OpenAI:
+  pip install openai
+
+These are NOT in requirements.txt (optional). Install manually as needed.
+The parsers are lazy-initialized — missing packages don't crash startup,
+they just log a warning and fall back to the rule-based parser.
+
+
+EXTENDING: ADDING A NEW PARSER
+--------------------------------
+1. Create a new class inheriting BaseQueryParser in query_parser.py
+2. Implement parse(self, query: str) -> ParsedQuery
+3. Add it to the parsers dict in get_parser()
+4. Add its name to the Literal type in config.py settings.query_parser
+5. Set QUERY_PARSER=yourparser in .env
+
+Example skeleton:
+  class MyCustomParser(BaseQueryParser):
+      def parse(self, query: str) -> ParsedQuery:
+          # Call your NLP service here
+          # Return ParsedQuery with extracted fields
+          ...
+
+================================================================================
+END OF CONTEXT
+================================================================================
+
+================================================================================
+KGRAPH SEARCH INCONSISTENCY FIXES
+================================================================================
+
+Problem 1: Cartesian Products in Cypher Queries
+The backend was generating chained OPTIONAL MATCH clauses in its Neo4j Cypher queries. If a project had 5 technologies, 1 domain, and 2 locations, this approach multiplied the result space and produced Cartesian products (e.g., 5 * 1 * 2 = 10 duplicate rows for just one node). This was slow and occasionally led to inaccurate counting/aggregations.
+
+Fix 1: Rewrote the queries in search_service.py and recommendation_service.py to use Pattern Comprehensions (e.g., [(p)-[:USES_TECH]->(tech:Technology) | tech.name] AS technologies). This isolates each relationship fetch entirely, completely eliminating Cartesian multiplication and drastically accelerating query execution.
+
+Problem 2: Arbitrary Limiting & Sorting
+In the search backend, the system was returning only the first 20 nodes alphabetically from the database (ORDER BY p.name LIMIT $limit) and then scoring their relevance in Python. If a perfect-match project started with the letter Z and there were over 20 projects, the system would simply ignore it, causing search results to appear inconsistent.
+
+Fix 2: Moved the LIMIT operation into Python. The database now returns all records that cleanly match the filters, scores them properly in Python, applies sorting based on the relevance score, and then safely truncates the list to the top limit.
+
+Problem 3: Removed WHERE false Dead Ends
+If a user submitted a broad query (e.g., simply projects or developers) that did not trigger any specific filtering keywords, the where_clauses array was empty. A fallback condition forced the query to append WHERE false, returning an empty array.
+
+Fix 3: Removed the fallback condition. Now, if the where_clauses list is empty, the system recognizes it as an exploratory query and cleanly returns matching nodes without short-circuiting.
+
+Problem 4: Array Duplication
+Pattern comprehensions can sometimes return duplicate property entries if there are multiple relationships.
+
+Fix 4: Added duplicate filtering logic in Python using list(set(...)) to ensure all parsed properties (like technologies and domains) remain completely unique in the API response.
