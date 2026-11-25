@@ -57,6 +57,39 @@ const [activeStepIndex, setActiveStepIndex] = useState<number>(0);
   const [selectedNode, setSelectedNode] = useState<any>(null);
   const [selectedType, setSelectedType] = useState<string | null>(null);
 
+  // Add alongside your existing state declarations
+const [monitoredHops, setMonitoredHops] = useState<Record<string, boolean>>({});
+const [isDrawerOpen, setIsDrawerOpen] = useState<boolean>(true);
+
+const toggleMonitorHop = (edgeKey: string) => {
+  setMonitoredHops((prev) => ({
+    ...prev,
+    [edgeKey]: !prev[edgeKey],
+  }));
+};
+
+// Compute collaboration history & active hop details for the selected path
+const pathStepsWithContext = useMemo(() => {
+  if (!pathResult?.found || !pathResult.nodes.length) return [];
+  return pathResult.nodes.map((node, index) => {
+    const incomingEdge = index > 0 ? pathResult.edges[index - 1] : null;
+    const outgoingEdge = index < pathResult.edges.length ? pathResult.edges[index] : null;
+    const prevNode = index > 0 ? pathResult.nodes[index - 1] : null;
+    const nextNode = index < pathResult.nodes.length - 1 ? pathResult.nodes[index + 1] : null;
+
+    return {
+      index,
+      node,
+      prevNode,
+      nextNode,
+      incomingEdge,
+      outgoingEdge,
+      hopKey: outgoingEdge ? `${outgoingEdge.source}__${outgoingEdge.target}__${outgoingEdge.type}` : null,
+    };
+  });
+}, [pathResult]);
+
+
   useEffect(() => {
     const updateSize = () => {
       if (containerRef.current) {
@@ -574,6 +607,60 @@ const [activeStepIndex, setActiveStepIndex] = useState<number>(0);
           </div>
 
           {/* Step-by-Step Collaboration Breadcrumb */}
+                    {/* Part 2: Chain Traversal Controls */}
+          {pathResult?.found && pathResult.nodes.length > 0 && (
+            <div
+              className={`mt-2.5 pt-2.5 border-t flex flex-wrap items-center justify-between gap-2 ${
+                isDark ? 'border-slate-800' : 'border-slate-200'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => focusPathStep(activeStepIndex - 1)}
+                  disabled={activeStepIndex <= 0}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition disabled:opacity-40 ${
+                    isDark
+                      ? 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-200'
+                      : 'bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-800'
+                  }`}
+                >
+                  ← Prev Node
+                </button>
+
+                <span
+                  className={`px-2.5 py-1 rounded-md text-xs font-mono font-semibold ${
+                    isDark ? 'bg-slate-800 text-cyan-300' : 'bg-slate-100 text-cyan-800'
+                  }`}
+                >
+                  Hop {activeStepIndex + 1} / {pathResult.nodes.length}
+                </span>
+
+                <button
+                  type="button"
+                  onClick={() => focusPathStep(activeStepIndex + 1)}
+                  disabled={activeStepIndex >= pathResult.nodes.length - 1}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm transition disabled:opacity-40"
+                >
+                  Next Node →
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setIsDrawerOpen((prev) => !prev)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition ${
+                  isDark
+                    ? 'bg-cyan-500/15 hover:bg-cyan-500/25 border-cyan-500/40 text-cyan-300'
+                    : 'bg-cyan-50 hover:bg-cyan-100 border-cyan-300 text-cyan-800'
+                }`}
+              >
+                {isDrawerOpen ? 'Hide Hop History' : 'Show Hop History'} (
+                {Object.values(monitoredHops).filter(Boolean).length} Monitored)
+              </button>
+            </div>
+          )}
+
           {pathResult?.found && pathResult.nodes.length > 0 && (
             <div
               className={`mt-3 pt-3 border-t flex items-center gap-2 overflow-x-auto pb-1 ${
@@ -638,6 +725,117 @@ const [activeStepIndex, setActiveStepIndex] = useState<number>(0);
             </div>
           )}
         </div>
+
+                  {/* Part 3: Collaboration History & Hop Monitoring Drawer */}
+          {pathResult?.found && isDrawerOpen && (
+            <div
+              className={`absolute top-4 left-4 w-80 max-h-[calc(100%-2rem)] flex flex-col rounded-xl border shadow-xl backdrop-blur-md overflow-hidden ${
+                isDark
+                  ? 'bg-slate-900/95 border-slate-700 text-slate-100'
+                  : 'bg-white/95 border-slate-200 text-slate-900'
+              }`}
+            >
+              <div
+                className={`p-3.5 border-b flex items-center justify-between ${
+                  isDark ? 'border-slate-800 bg-slate-900' : 'border-slate-200 bg-slate-50'
+                }`}
+              >
+                <div>
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-cyan-500">
+                    Collaboration History & Hops
+                  </h3>
+                  <p className={`text-[11px] mt-0.5 ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                    {pathResult.edges.length} hops • Total cost {pathResult.total_cost}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsDrawerOpen(false)}
+                  className={`text-xs ${
+                    isDark ? 'text-slate-400 hover:text-slate-200' : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="p-3 overflow-y-auto space-y-2.5 flex-1">
+                {pathResult.nodes.map((node, idx) => {
+                  const outgoingEdge = pathResult.edges[idx];
+                  const nextNode = pathResult.nodes[idx + 1];
+                  const hopKey = outgoingEdge
+                    ? `${outgoingEdge.source}__${outgoingEdge.target}__${outgoingEdge.type}`
+                    : null;
+                  const isMonitored = hopKey ? !!monitoredHops[hopKey] : false;
+                  const isCurrent = idx === activeStepIndex;
+
+                  return (
+                    <div
+                      key={node.id}
+                      onClick={() => focusPathStep(idx)}
+                      className={`p-2.5 rounded-lg border cursor-pointer transition ${
+                        isCurrent
+                          ? isDark
+                            ? 'bg-indigo-500/15 border-indigo-500/50'
+                            : 'bg-indigo-50 border-indigo-300'
+                          : isDark
+                          ? 'bg-slate-800/50 border-slate-800 hover:border-slate-700'
+                          : 'bg-slate-50 border-slate-200 hover:border-slate-300'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span
+                            className="w-2 h-2 rounded-full shrink-0"
+                            style={{ backgroundColor: NODE_COLORS[node.type] || '#94a3b8' }}
+                          />
+                          <span className="text-xs font-bold truncate">{node.label}</span>
+                        </div>
+                        <span className="text-[10px] font-mono opacity-70">#{idx + 1}</span>
+                      </div>
+
+                      {outgoingEdge && nextNode && hopKey && (
+                        <div
+                          onClick={(e) => e.stopPropagation()}
+                          className={`mt-2 pt-2 border-t text-[11px] ${
+                            isDark ? 'border-slate-700/80' : 'border-slate-200'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="font-mono font-semibold text-cyan-500">
+                              {outgoingEdge.type}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setMonitoredHops((prev) => ({
+                                  ...prev,
+                                  [hopKey]: !prev[hopKey],
+                                }))
+                              }
+                              className={`px-2 py-0.5 rounded text-[10px] font-semibold border transition ${
+                                isMonitored
+                                  ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-400'
+                                  : isDark
+                                  ? 'bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-200'
+                                  : 'bg-white border-slate-300 text-slate-600 hover:text-slate-900'
+                              }`}
+                            >
+                              {isMonitored ? '● Monitored' : '+ Monitor'}
+                            </button>
+                          </div>
+                          <p className="mt-1 truncate opacity-90">
+                            → <strong>{nextNode.label}</strong> ({nextNode.type})
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
 
         {/* Search & Type Filter Bar */}
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
