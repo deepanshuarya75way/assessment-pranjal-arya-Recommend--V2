@@ -9,6 +9,29 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
+export interface ShortestPathEdge {
+  source: string;
+  target: string;
+  type: string;
+  weight: number;
+};
+
+export interface ShortestPathResponse {
+  found: boolean;
+  degrees: number | null;
+  total_cost: number | null;
+  nodes: Array<{
+    id: string;
+    label: string;
+    type: string;
+    color?: string;
+    size?: number;
+    properties?: Record<string, any>;
+  }>;
+  edges: ShortestPathEdge[];
+  message?: string;
+};
+
 export const searchAPI = {
   search: async (query: string): Promise<SearchResponse> => {
     const { data } = await api.post('/search', { query });
@@ -49,6 +72,22 @@ export const developersAPI = {
 export const graphAPI = {
   get: async (query?: string): Promise<GraphData> => {
     const { data } = await api.get('/graph', { params: { q: query } });
+    return data;
+  },
+  shortestPath: async (
+    sourceId: string,
+    targetId: string,
+    maxDepth: number = 4,
+    weighted: boolean = true
+  ): Promise<ShortestPathResponse> => {
+    const { data } = await api.get('/graph/shortest-path', {
+      params: {
+        source_id: sourceId,
+        target_id: targetId,
+        max_depth: maxDepth,
+        weighted,
+      },
+    });
     return data;
   },
 };

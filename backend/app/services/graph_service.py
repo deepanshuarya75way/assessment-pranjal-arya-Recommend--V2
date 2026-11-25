@@ -7,6 +7,9 @@ nodes and edges suitable for force-directed graph rendering.
 import logging
 from app.core.database import neo4j_driver
 from app.models.schemas import GraphResponse, GraphNode, GraphLink
+import heapq
+from typing import Optional
+
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +192,157 @@ def get_full_graph(query: str = None) -> GraphResponse:
         stats=type_counts,
     )
 
+    
+RELATIONSHIP_WEIGHTS = {
+    "DEVELOPED": 1.0,
+    "USES_TECH": 1.2,
+    "BELONGS_TO": 1.5,
+    "LOCATED_IN": 2.0,
+}
+
+
+def find_shortest_path_dijkstra(
+    source_id: str,
+    target_id: str,
+    max_depth: int = 4,
+    weighted: bool = True,
+) -> dict:
+    """
+    Find the shortest path between source_id and target_id using Dijkstra's algorithm,
+    constrained by max_depth (2 to 6 hops).
+    """
+    max_depth = max(2, min(6, max_depth))
+
+    # Fetch ALL nodes and relationships directly from Neo4j
+    node_query = """
+    MATCH (n)
+    WHERE n.name IS NOT NULL
+    RETURN labels(n)[0] AS label_type, n.name AS name, properties(n) AS props
+    """
+    edge_query = """
+    MATCH (a)-[r]->(b)
+    WHERE a.name IS NOT NULL AND b.name IS NOT NULL
+    RETURN labels(a)[0] AS src_type, a.name AS src_name,
+           type(r) AS rel_type,
+           labels(b)[0] AS dst_type, b.name AS dst_name
+    """
+
+    PREFIX_MAP = {
+        "Developer": "dev",
+        "Project": "proj",
+        "Technology": "tech",
+        "Domain": "dom",
+        "Location": "loc",
+    }
+
+    try:
+        node_rows = neo4j_driver.execute_query(node_query, {})
+        edge_rows = neo4j_driver.execute_query(edge_query, {})
+    except Exception as e:
+        logger.error(f"Dijkstra graph fetch failed: {e}")
+        return {"found": False, "message": f"Database query failed: {e}"}
+
+    nodes_by_id: dict[str, GraphNode] = {}
+    for row in node_rows:
+        ntype = row.get("label_type")
+        name = row.get("name")
+        prefix = PREFIX_MAP.get(ntype)
+        if not prefix or not name:
+            continue
+        nid = f"{prefix}_{name.strip()}"
+        if nid not in nodes_by_id:
+            nodes_by_id[nid] = GraphNode(
+                id=nid,
+                label=name.strip(),
+                type=ntype,
+                color=NODE_COLORS.get(ntype, "#94a3b8"),
+                size=NODE_SIZES.get(ntype, 6),
+                properties=row.get("props") or {},
+            )
+
+    clean_source = source_id.strip()
+    clean_target = target_id.strip()
+
+    if clean_source not in nodes_by_id or clean_target not in nodes_by_id:
+        missing = [x for x in (clean_source, clean_target) if x not in nodes_by_id]
+        return {
+            "found": False,
+            "message": f"Entity not found in Neo4j: {', '.join(missing)}",
+        }
+
+    if clean_source == clean_target:
+        return {
+            "found": True,
+            "degrees": 0,
+            "total_cost": 0.0,
+            "nodes": [nodes_by_id[clean_source].model_dump()],
+            "edges": [],
+        }
+
+    adj: dict[str, list[tuple[str, str, float]]] = {nid: [] for nid in nodes_by_id}
+    for row in edge_rows:
+        s_prefix = PREFIX_MAP.get(row.get("src_type"))
+        t_prefix = PREFIX_MAP.get(row.get("dst_type"))
+        s_name = row.get("src_name")
+        t_name = row.get("dst_name")
+        rel_type = row.get("rel_type")
+        if not (s_prefix and t_prefix and s_name and t_name and rel_type):
+            continue
+
+        s_id = f"{s_prefix}_{s_name.strip()}"
+        t_id = f"{t_prefix}_{t_name.strip()}"
+        if s_id in adj and t_id in adj:
+            cost = RELATIONSHIP_WEIGHTS.get(rel_type, 1.0) if weighted else 1.0
+            adj[s_id].append((t_id, rel_type, cost))
+            adj[t_id].append((s_id, rel_type, cost))
+
+    pq = [(0.0, 0, clean_source, [clean_source], [])]
+    best_cost: dict[tuple[str, int], float] = {(clean_source, 0): 0.0}
+
+    while pq:
+        cost, hops, curr_id, node_path, edge_path = heapq.heappop(pq)
+
+        if curr_id == clean_target:
+            return {
+                "found": True,
+                "degrees": hops,
+                "total_cost": round(cost, 2),
+                "nodes": [nodes_by_id[nid].model_dump() for nid in node_path],
+                "edges": edge_path,
+            }
+
+        if hops >= max_depth:
+            continue
+
+        for neighbor_id, rel_type, edge_cost in adj.get(curr_id, []):
+            if neighbor_id in node_path:
+                continue
+            new_hops = hops + 1
+            new_cost = cost + edge_cost
+            state = (neighbor_id, new_hops)
+
+            if new_cost < best_cost.get(state, float("inf")):
+                best_cost[state] = new_cost
+                edge_obj = {
+                    "source": curr_id,
+                    "target": neighbor_id,
+                    "type": rel_type,
+                    "weight": edge_cost,
+                }
+                heapq.heappush(
+                    pq,
+                    (new_cost, new_hops, neighbor_id, node_path + [neighbor_id], edge_path + [edge_obj]),
+                )
+
+    return {
+        "found": False,
+        "degrees": None,
+        "total_cost": None,
+        "nodes": [],
+        "edges": [],
+        "message": f"No connection found between '{clean_source}' and '{clean_target}' within {max_depth} degrees.",
+    }
+
 
 def get_subgraph(entity_type: str, entity_name: str) -> GraphResponse:
     """
@@ -310,6 +464,8 @@ def get_subgraph(entity_type: str, entity_name: str) -> GraphResponse:
     type_counts = {}
     for node in nodes_map.values():
         type_counts[node.type] = type_counts.get(node.type, 0) + 1
+
+        
 
     return GraphResponse(
         nodes=list(nodes_map.values()),
