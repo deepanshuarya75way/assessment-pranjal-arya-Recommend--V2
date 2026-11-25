@@ -118,6 +118,15 @@ reviews whether they were useful or not.
 2. Not Useful Review - these contain data of query , response and reason
    ||Query | Response | user Note | Mode | Time ||
 
+## Graph connection chain and shotest distance
+
+1. implemented the connection between 2 random nodes based on their adjacent nods
+2. Managed the depth of connection to a limited range to avoid excessive computation (2 to 6)
+3. used Dijkstra algo to find shortest path
+4. provided weights to the mentioned edges
+5. A monitor board to monitor each node contribution
+
+
 ## API Reference Summary
 
 | Method | Endpoint | Description |
@@ -129,5 +138,5 @@ reviews whether they were useful or not.
 | **GET** | `/api/projects/{name}/recommendations` | Generate similar projects and developers via graph path analysis |
 | **GET** | `/api/developers` | Query developers with optional tech stack filters |
 | **GET** | `/api/developers/{name}` | Fetch developer details |
-| **GET** | `/api/graph` | Returns nodes and edges dataset format for force-directed rendering |
+| **GET** | `/api/graph` | Returns nodes and edges dataset format for force-directed rendering and shortest path too |
 | **POST** | `/api/seed` | Triggers a fresh seed of the graph database |
