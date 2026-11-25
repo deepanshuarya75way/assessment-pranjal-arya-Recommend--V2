@@ -213,7 +213,7 @@ def find_shortest_path_dijkstra(
     """
     max_depth = max(2, min(6, max_depth))
 
-    # Fetch ALL nodes and relationships directly from Neo4j
+    
     node_query = """
     MATCH (n)
     WHERE n.name IS NOT NULL
