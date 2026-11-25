@@ -194,10 +194,10 @@ def get_full_graph(query: str = None) -> GraphResponse:
 
     
 RELATIONSHIP_WEIGHTS = {
-    "DEVELOPED": 1.0,
+    "DEVELOPED": 3.0,
     "USES_TECH": 1.2,
     "BELONGS_TO": 1.5,
-    "LOCATED_IN": 2.0,
+    "LOCATED_IN": 4.0,
 }
 
 
